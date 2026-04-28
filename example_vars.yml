@@ -1,0 +1,15 @@
+# Sensitive values - encrypt this file with: ansible-vault create vars.yml
+# After editing, encrypt with: ansible-vault encrypt vars.yml
+
+# Configurable non-root user (will be created by playbook)
+username: your_username_here
+
+# Sensitive (replace with actual values)
+user_password: "your-user-plaintext-password"
+vnc_password: "your-vnc-plaintext-password"
+ssh_public_key: "ssh-rsa AAAAB3NzaC1yc2E... your@email.com" # Your SSH public key
+
+# Non-sensitive configuration
+novnc_port: 6080
+vnc_display_num: 1
+vnc_resolution: "1920x1080"

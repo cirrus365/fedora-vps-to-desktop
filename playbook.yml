@@ -1,0 +1,341 @@
+- name: Setup Fedora VPS as remote desktop
+  hosts: vps
+  become: yes
+  become_method: sudo
+  gather_facts: yes
+  vars_files:
+    - vars.yml
+  vars:
+    vnc_service_name: "vncserver-{{ username }}"
+  tasks:
+    - name: Check OS compatibility (Fedora 43+)
+      assert:
+        that:
+          - ansible_facts['distribution'] == "Fedora" and ansible_facts['distribution_version'] is version('43', '>=')
+        fail_msg: "Unsupported OS. Only Fedora 43+ is supported."
+
+    - name: Check if {{ username }} user exists
+      command: id -u {{ username }}
+      register: user_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create {{ username }} user
+      user:
+        name: "{{ username }}"
+        password: "{{ user_password | password_hash('sha512') }}"
+        groups: wheel
+        append: yes
+        shell: /bin/bash
+        create_home: yes
+      when: user_check.rc != 0
+
+    - name: Configure passwordless sudo for {{ username }}
+      copy:
+        content: "{{ username }} ALL=(ALL) NOPASSWD: ALL"
+        dest: /etc/sudoers.d/{{ username }}
+        mode: 0440
+        validate: /usr/sbin/visudo -cf %s
+
+    - name: Add SSH public key to {{ username }}'s authorized_keys
+      authorized_key:
+        user: "{{ username }}"
+        key: "{{ ssh_public_key }}"
+        state: present
+
+    - name: Get UID of {{ username }}
+      command: id -u {{ username }}
+      register: user_uid_result
+      changed_when: false
+
+    - name: Set user_uid fact
+      set_fact:
+        user_uid: "{{ user_uid_result.stdout }}"
+
+    - name: Install packages for Fedora
+      dnf:
+        name:
+          - "@xfce-desktop-environment"
+          - tigervnc-server
+          - git
+          - python3
+          - python3-pip
+          - firewalld
+          - dbus-x11
+          - firefox
+          - fail2ban
+        state: present
+
+    - name: Clone noVNC (v1.6.0 stable)
+      git:
+        repo: https://github.com/novnc/noVNC.git
+        dest: /opt/noVNC
+        version: v1.6.0
+
+    - name: Install build dependencies for compiling websockify
+      dnf:
+        name:
+          - gcc-c++
+          - make
+          - python3-devel
+          - cmake
+          - ninja-build
+        state: present
+
+    - name: Install websockify from source (avoid C API mismatch)
+      shell: |
+        pip3 uninstall -y websockify || true
+        pip3 install --no-cache-dir --no-binary websockify websockify
+      register: websockify_install
+      changed_when: websockify_install.rc == 0
+
+    - name: Verify websockify installation
+      shell: |
+        websockify --help 2>&1 | head -1
+      register: ws_verify
+      changed_when: false
+      failed_when: ws_verify.rc != 0
+
+    - name: Create SSL directory for noVNC
+      file:
+        path: /etc/ssl/novnc
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: 0755
+
+    - name: Generate self-signed SSL certificate
+      shell: |
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+          -keyout /etc/ssl/novnc/novnc.key \
+          -out /etc/ssl/novnc/novnc.crt \
+          -subj "/CN={{ ansible_default_ipv4.address }}"
+      args:
+        creates: /etc/ssl/novnc/novnc.crt
+
+    - name: Set SSL cert permissions
+      file:
+        path: "{{ item }}"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: 0600
+      loop:
+        - /etc/ssl/novnc/novnc.crt
+        - /etc/ssl/novnc/novnc.key
+
+    - name: Create VNC directory for {{ username }}
+      file:
+        path: /home/{{ username }}/.vnc
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: 0755
+
+    - name: Create XDG runtime directory for {{ username }}
+      file:
+        path: /run/user/{{ user_uid }}
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: 0700
+
+    - name: Set VNC password for {{ username }}
+      shell: |
+        printf "%s" "{{ vnc_password }}" | vncpasswd -f > /home/{{ username }}/.vnc/passwd
+      args:
+        creates: /home/{{ username }}/.vnc/passwd
+      become: yes
+      become_user: "{{ username }}"
+
+    - name: Set VNC password file permissions
+      file:
+        path: /home/{{ username }}/.vnc/passwd
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: 0600
+
+    - name: Create VNC xstartup (XFCE4 + clipboard support)
+      copy:
+        content: |
+          #!/bin/bash
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+
+          # Start dbus session
+          if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+              eval `dbus-launch --sh-syntax`
+              export DBUS_SESSION_BUS_ADDRESS
+          fi
+
+          export XDG_SESSION_TYPE=x11
+          export XDG_CURRENT_DESKTOP=XFCE
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+
+          [ -r ~/.Xresources ] && xrdb ~/.Xresources
+
+          exec startxfce4 &
+          vncconfig -nowin &
+
+          wait
+        dest: /home/{{ username }}/.vnc/xstartup
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: 0755
+
+    - name: Create VNC systemd service
+      copy:
+        content: |
+          [Unit]
+          Description=Remote desktop service (VNC) for {{ username }}
+          After=syslog.target network.target
+
+          [Service]
+          Type=simple
+          User={{ username }}
+          Group={{ username }}
+          WorkingDirectory=/home/{{ username }}
+          ExecStartPre=-/usr/bin/vncserver -kill :{{ vnc_display_num }}
+          ExecStart=/usr/bin/vncserver -fg :{{ vnc_display_num }} -geometry {{ vnc_resolution }} -depth 24
+          ExecStop=/usr/bin/vncserver -kill :{{ vnc_display_num }}
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/{{ vnc_service_name }}.service
+        mode: 0644
+
+    - name: Create noVNC (websockify) systemd service
+      copy:
+        content: |
+          [Unit]
+          Description=noVNC Websockify Service
+          After=network.target {{ vnc_service_name }}.service
+          Wants={{ vnc_service_name }}.service
+
+          [Service]
+          Type=simple
+          User={{ username }}
+          Group={{ username }}
+          ExecStart=/usr/local/bin/websockify --cert /etc/ssl/novnc/novnc.crt --key /etc/ssl/novnc/novnc.key --web /opt/noVNC {{ novnc_port }} localhost:590{{ vnc_display_num }}
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/novnc.service
+        mode: 0644
+
+    - name: Harden SSH configuration
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+        validate: /usr/sbin/sshd -t -f %s
+      loop:
+        - { regexp: '^PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+
+    - name: Restart SSH service
+      service:
+        name: sshd
+        state: restarted
+        enabled: yes
+
+    - name: Reload systemd daemon
+      command: systemctl daemon-reload
+      changed_when: false
+
+    - name: Start and enable VNC service
+      service:
+        name: "{{ vnc_service_name }}"
+        state: started
+        enabled: yes
+
+    - name: Start and enable noVNC service
+      service:
+        name: novnc
+        state: started
+        enabled: yes
+
+    - name: Configure firewall (firewalld)
+      firewalld:
+        service: ssh
+        state: enabled
+        permanent: yes
+        immediate: yes
+
+    - name: Allow noVNC port in firewall
+      firewalld:
+        port: "{{ novnc_port }}/tcp"
+        state: enabled
+        permanent: yes
+        immediate: yes
+
+    - name: Configure fail2ban for VNC protection
+      block:
+        - name: Create fail2ban VNC filter
+          copy:
+            content: |
+              [Definition]
+              failregex = ^.*vncauth: authentication failed from <HOST>$
+              ignoreregex =
+            dest: /etc/fail2ban/filter.d/vnc.conf
+            mode: 0644
+
+        - name: Create VNC log file for fail2ban
+          copy:
+            content: ""
+            dest: /var/log/vnc-auth.log
+            force: no
+            owner: "{{ username }}"
+            group: "{{ username }}"
+            mode: 0644
+
+        - name: Configure fail2ban jail for VNC
+          copy:
+            content: |
+              [vnc]
+              enabled = true
+              filter = vnc
+              port = 6080
+              logpath = /var/log/vnc-auth.log
+              backend = auto
+              maxretry = 5
+              bantime = 3600
+              findtime = 600
+            dest: /etc/fail2ban/jail.d/vnc.conf
+            mode: 0644
+
+        - name: Create fail2ban systemd override directory
+          file:
+            path: /etc/systemd/system/fail2ban.service.d
+            state: directory
+            mode: 0755
+
+        - name: Create fail2ban systemd override
+          copy:
+            content: |
+              [Unit]
+              PartOf=
+              After=network.target
+
+              [Service]
+              Restart=always
+              RestartSec=5
+            dest: /etc/systemd/system/fail2ban.service.d/override.conf
+            mode: 0644
+
+        - name: Reload systemd after override
+          command: systemctl daemon-reload
+          changed_when: false
+
+        - name: Start and enable fail2ban
+          service:
+            name: fail2ban
+            state: started
+            enabled: yes
+
+    - name: Run system updates
+      dnf:
+        name: "*"
+        state: latest
