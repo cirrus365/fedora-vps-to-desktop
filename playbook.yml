@@ -301,6 +301,20 @@
 
     - name: Configure nginx reverse proxy for noVNC
       block:
+        - name: Install SELinux management tools
+          dnf:
+            name: policycoreutils-python-utils
+            state: present
+
+        - name: Allow nginx to make network connections (SELinux)
+          seboolean:
+            name: "{{ item }}"
+            state: yes
+            persistent: yes
+          loop:
+            - httpd_can_network_connect
+            - httpd_can_network_relay
+
         - name: Create webroot directory for ACME challenge
           file:
             path: /var/www/html
