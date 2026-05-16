@@ -6,10 +6,15 @@ username: your_username_here
 
 # Sensitive (replace with actual values)
 user_password: "your-user-plaintext-password"
-vnc_password: "your-vnc-plaintext-password"
-ssh_public_key: "ssh-rsa AAAAB3NzaC1yc2E... your@email.com" # Your SSH public key
+vnc_password: "vnc-password"
 
 # Non-sensitive configuration
 novnc_port: 6080
 vnc_display_num: 1
 vnc_resolution: "1920x1080"
+nginx_ssl_port: 443
+timezone: UTC
+
+# Optional: Set a domain for Let's Encrypt cert (self-signed used otherwise)
+# domain: "vnc.example.com"
+# letsencrypt_email: ""

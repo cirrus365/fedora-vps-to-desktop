@@ -37,11 +37,28 @@
         mode: 0440
         validate: /usr/sbin/visudo -cf %s
 
-    - name: Add SSH public key to {{ username }}'s authorized_keys
-      authorized_key:
-        user: "{{ username }}"
-        key: "{{ ssh_public_key }}"
-        state: present
+    - name: Create .ssh directory for {{ username }}
+      file:
+        path: /home/{{ username }}/.ssh
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: 0700
+
+    - name: Check if root has SSH authorized_keys
+      stat:
+        path: /root/.ssh/authorized_keys
+      register: root_ssh_keys
+
+    - name: Copy SSH keys from root to {{ username }}
+      copy:
+        src: /root/.ssh/authorized_keys
+        dest: /home/{{ username }}/.ssh/authorized_keys
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: 0600
+        remote_src: yes
+      when: root_ssh_keys.stat.exists and root_ssh_keys.stat.size > 0
 
     - name: Get UID of {{ username }}
       command: id -u {{ username }}
@@ -60,10 +77,26 @@
           - git
           - python3
           - python3-pip
+          - gcc-c++
+          - make
+          - python3-devel
+          - cmake
+          - ninja-build
+          - nginx
+          - certbot
+          - python3-certbot-nginx
           - firewalld
           - dbus-x11
           - firefox
           - fail2ban
+          - arc-theme
+          - papirus-icon-theme
+          - xfce4-power-manager
+          - thunar-archive-plugin
+          - gvfs
+          - google-noto-sans-fonts
+          - kleopatra
+          - pinentry-qt
         state: present
 
     - name: Clone noVNC (v1.6.0 stable)
@@ -71,16 +104,6 @@
         repo: https://github.com/novnc/noVNC.git
         dest: /opt/noVNC
         version: v1.6.0
-
-    - name: Install build dependencies for compiling websockify
-      dnf:
-        name:
-          - gcc-c++
-          - make
-          - python3-devel
-          - cmake
-          - ninja-build
-        state: present
 
     - name: Install websockify from source (avoid C API mismatch)
       shell: |
@@ -123,13 +146,13 @@
         - /etc/ssl/novnc/novnc.crt
         - /etc/ssl/novnc/novnc.key
 
-    - name: Create VNC directory for {{ username }}
+    - name: Create TigerVNC config directory for {{ username }} (TigerVNC 1.15+)
       file:
-        path: /home/{{ username }}/.vnc
+        path: /home/{{ username }}/.config/tigervnc
         state: directory
         owner: "{{ username }}"
         group: "{{ username }}"
-        mode: 0755
+        mode: 0700
 
     - name: Create XDG runtime directory for {{ username }}
       file:
@@ -141,27 +164,26 @@
 
     - name: Set VNC password for {{ username }}
       shell: |
-        printf "%s" "{{ vnc_password }}" | vncpasswd -f > /home/{{ username }}/.vnc/passwd
+        printf "%s" "{{ vnc_password }}" | vncpasswd -f > /home/{{ username }}/.config/tigervnc/passwd
       args:
-        creates: /home/{{ username }}/.vnc/passwd
+        creates: /home/{{ username }}/.config/tigervnc/passwd
       become: yes
       become_user: "{{ username }}"
 
     - name: Set VNC password file permissions
       file:
-        path: /home/{{ username }}/.vnc/passwd
+        path: /home/{{ username }}/.config/tigervnc/passwd
         owner: "{{ username }}"
         group: "{{ username }}"
         mode: 0600
 
-    - name: Create VNC xstartup (XFCE4 + clipboard support)
+    - name: Create VNC xstartup (XFCE4)
       copy:
         content: |
           #!/bin/bash
           unset SESSION_MANAGER
           unset DBUS_SESSION_BUS_ADDRESS
 
-          # Start dbus session
           if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
               eval `dbus-launch --sh-syntax`
               export DBUS_SESSION_BUS_ADDRESS
@@ -173,14 +195,16 @@
 
           [ -r ~/.Xresources ] && xrdb ~/.Xresources
 
-          exec startxfce4 &
-          vncconfig -nowin &
-
-          wait
-        dest: /home/{{ username }}/.vnc/xstartup
+          exec startxfce4
+        dest: /home/{{ username }}/.config/tigervnc/xstartup
         owner: "{{ username }}"
         group: "{{ username }}"
         mode: 0755
+
+    - name: Remove old .vnc directory (prevents TigerVNC 1.15 migration error)
+      file:
+        path: /home/{{ username }}/.vnc
+        state: absent
 
     - name: Create VNC systemd service
       copy:
@@ -195,7 +219,7 @@
           Group={{ username }}
           WorkingDirectory=/home/{{ username }}
           ExecStartPre=-/usr/bin/vncserver -kill :{{ vnc_display_num }}
-          ExecStart=/usr/bin/vncserver -fg :{{ vnc_display_num }} -geometry {{ vnc_resolution }} -depth 24
+          ExecStart=/usr/bin/vncserver -fg :{{ vnc_display_num }} -geometry {{ vnc_resolution }} -depth 24 -UseBlacklist=0
           ExecStop=/usr/bin/vncserver -kill :{{ vnc_display_num }}
 
           [Install]
@@ -215,13 +239,18 @@
           Type=simple
           User={{ username }}
           Group={{ username }}
-          ExecStart=/usr/local/bin/websockify --cert /etc/ssl/novnc/novnc.crt --key /etc/ssl/novnc/novnc.key --web /opt/noVNC {{ novnc_port }} localhost:590{{ vnc_display_num }}
+          ExecStart=/usr/local/bin/websockify 127.0.0.1:{{ novnc_port }} localhost:590{{ vnc_display_num }}
           Restart=on-failure
 
           [Install]
           WantedBy=multi-user.target
         dest: /etc/systemd/system/novnc.service
         mode: 0644
+
+    - name: Check if authorized_keys exists and is non-empty
+      stat:
+        path: /home/{{ username }}/.ssh/authorized_keys
+      register: authorized_keys_stat
 
     - name: Harden SSH configuration
       lineinfile:
@@ -234,6 +263,9 @@
         - { regexp: '^PermitRootLogin', line: 'PermitRootLogin no' }
         - { regexp: '^PasswordAuthentication', line: 'PasswordAuthentication no' }
         - { regexp: '^PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+      when: >
+        item.regexp != '^PasswordAuthentication'
+        or (authorized_keys_stat.stat.exists and authorized_keys_stat.stat.size > 0)
 
     - name: Restart SSH service
       service:
@@ -244,6 +276,11 @@
     - name: Reload systemd daemon
       command: systemctl daemon-reload
       changed_when: false
+
+    - name: Set system timezone
+      timezone:
+        name: "{{ timezone }}"
+      when: timezone is defined and timezone | length > 0
 
     - name: Start and enable VNC service
       service:
@@ -257,53 +294,197 @@
         state: started
         enabled: yes
 
+    - name: Configure nginx reverse proxy for noVNC
+      block:
+        - name: Create webroot directory for ACME challenge
+          file:
+            path: /var/www/html
+            state: directory
+            mode: 0755
+
+        - name: Set SSL certificate facts
+          set_fact:
+            ssl_cert_path: /etc/ssl/novnc/novnc.crt
+            ssl_key_path: /etc/ssl/novnc/novnc.key
+
+        - name: Create nginx site for noVNC (self-signed)
+          copy:
+            content: |
+              limit_req_zone $binary_remote_addr zone=novnc:10m rate=5r/m;
+
+              server {
+                  listen {{ nginx_ssl_port }} ssl;
+                  server_name {{ domain | default('_') }};
+
+                  ssl_certificate {{ ssl_cert_path }};
+                  ssl_certificate_key {{ ssl_key_path }};
+
+                  root /opt/noVNC;
+                  index vnc.html;
+
+                  location /websockify {
+                      limit_req zone=novnc burst=10 nodelay;
+                      proxy_pass http://127.0.0.1:{{ novnc_port }};
+                      proxy_http_version 1.1;
+                      proxy_set_header Upgrade $http_upgrade;
+                      proxy_set_header Connection "upgrade";
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Real-IP $remote_addr;
+                  }
+
+                  location / {
+                      try_files $uri $uri/ =404;
+                  }
+              }
+
+              server {
+                  listen 80;
+                  server_name {{ domain | default('_') }};
+
+                  location /.well-known/acme-challenge/ {
+                      root /var/www/html;
+                  }
+
+                  location / {
+                      return 301 https://$server_name$request_uri;
+                  }
+              }
+            dest: /etc/nginx/conf.d/novnc.conf
+            mode: 0644
+
+        - name: Remove default nginx site
+          file:
+            path: /etc/nginx/conf.d/default.conf
+            state: absent
+
+        - name: Obtain Let's Encrypt certificate (if domain is set)
+          when: domain is defined and domain | length > 0
+          block:
+            - name: Run certbot to get certificate
+              shell: |
+                {% if letsencrypt_email is defined and letsencrypt_email | length > 0 %}
+                certbot certonly --webroot -w /var/www/html -d {{ domain }} \
+                  --non-interactive --agree-tos -m {{ letsencrypt_email }}
+                {% else %}
+                certbot certonly --webroot -w /var/www/html -d {{ domain }} \
+                  --non-interactive --agree-tos --register-unsafely-without-email
+                {% endif %}
+              args:
+                creates: /etc/letsencrypt/live/{{ domain }}/fullchain.pem
+
+            - name: Update SSL cert paths to Let's Encrypt
+              set_fact:
+                ssl_cert_path: /etc/letsencrypt/live/{{ domain }}/fullchain.pem
+                ssl_key_path: /etc/letsencrypt/live/{{ domain }}/privkey.pem
+
+            - name: Regenerate nginx site with Let's Encrypt cert
+              copy:
+                content: |
+                  limit_req_zone $binary_remote_addr zone=novnc:10m rate=5r/m;
+
+                  server {
+                      listen {{ nginx_ssl_port }} ssl;
+                      server_name {{ domain }};
+
+                      ssl_certificate {{ ssl_cert_path }};
+                      ssl_certificate_key {{ ssl_key_path }};
+
+                      root /opt/noVNC;
+                      index vnc.html;
+
+                      location /websockify {
+                          limit_req zone=novnc burst=10 nodelay;
+                          proxy_pass http://127.0.0.1:{{ novnc_port }};
+                          proxy_http_version 1.1;
+                          proxy_set_header Upgrade $http_upgrade;
+                          proxy_set_header Connection "upgrade";
+                          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                          proxy_set_header X-Real-IP $remote_addr;
+                      }
+
+                      location / {
+                          try_files $uri $uri/ =404;
+                      }
+                  }
+
+                  server {
+                      listen 80;
+                      server_name {{ domain }};
+
+                      location /.well-known/acme-challenge/ {
+                          root /var/www/html;
+                      }
+
+                      location / {
+                          return 301 https://$server_name$request_uri;
+                      }
+                  }
+                dest: /etc/nginx/conf.d/novnc.conf
+                mode: 0644
+
+            - name: Enable certbot auto-renewal timer
+              systemd:
+                name: certbot.timer
+                state: started
+                enabled: yes
+
+        - name: Reload nginx to apply configuration
+          service:
+            name: nginx
+            state: reloaded
+
+        - name: Restart VNC and noVNC to apply new configs
+          service:
+            name: "{{ item }}"
+            state: restarted
+          loop:
+            - "{{ vnc_service_name }}"
+            - novnc
+
     - name: Configure firewall (firewalld)
       firewalld:
-        service: ssh
+        service: "{{ item.service }}"
         state: enabled
         permanent: yes
         immediate: yes
+      loop:
+        - { service: ssh }
+        - { service: https }
+        - { service: http }
 
-    - name: Allow noVNC port in firewall
-      firewalld:
-        port: "{{ novnc_port }}/tcp"
-        state: enabled
-        permanent: yes
-        immediate: yes
-
-    - name: Configure fail2ban for VNC protection
+    - name: Configure fail2ban for noVNC protection via nginx logs
       block:
-        - name: Create fail2ban VNC filter
+        - name: Create fail2ban filter for noVNC connections
           copy:
             content: |
               [Definition]
-              failregex = ^.*vncauth: authentication failed from <HOST>$
+              failregex = ^<HOST> - - \[.*\] "GET /websockify.*" 101
               ignoreregex =
-            dest: /etc/fail2ban/filter.d/vnc.conf
+            dest: /etc/fail2ban/filter.d/novnc.conf
             mode: 0644
 
-        - name: Create VNC log file for fail2ban
-          copy:
-            content: ""
-            dest: /var/log/vnc-auth.log
-            force: no
-            owner: "{{ username }}"
-            group: "{{ username }}"
-            mode: 0644
+        - name: Remove old VNC filter and jail (deprecated)
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /etc/fail2ban/filter.d/vnc.conf
+            - /etc/fail2ban/jail.d/vnc.conf
+          ignore_errors: yes
 
-        - name: Configure fail2ban jail for VNC
+        - name: Configure fail2ban jail for noVNC
           copy:
             content: |
-              [vnc]
+              [novnc]
               enabled = true
-              filter = vnc
-              port = 6080
-              logpath = /var/log/vnc-auth.log
+              filter = novnc
+              port = https
+              logpath = /var/log/nginx/access.log
               backend = auto
-              maxretry = 5
+              maxretry = 20
               bantime = 3600
               findtime = 600
-            dest: /etc/fail2ban/jail.d/vnc.conf
+            dest: /etc/fail2ban/jail.d/novnc.conf
             mode: 0644
 
         - name: Create fail2ban systemd override directory
@@ -329,10 +510,10 @@
           command: systemctl daemon-reload
           changed_when: false
 
-        - name: Start and enable fail2ban
+        - name: Restart fail2ban to apply new jail config
           service:
             name: fail2ban
-            state: started
+            state: restarted
             enabled: yes
 
     - name: Run system updates
