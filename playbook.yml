@@ -102,6 +102,7 @@
           - google-noto-sans-fonts
           - kleopatra
           - pinentry-qt
+          - xarchiver
         state: present
 
     - name: Clone noVNC (v1.6.0 stable)
