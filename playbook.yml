@@ -295,6 +295,17 @@
         state: started
         enabled: yes
 
+    - name: Configure firewall (firewalld)
+      firewalld:
+        service: "{{ item.service }}"
+        state: enabled
+        permanent: yes
+        immediate: yes
+      loop:
+        - { service: ssh }
+        - { service: https }
+        - { service: http }
+
     - name: Configure nginx reverse proxy for noVNC
       block:
         - name: Install SELinux management tools
@@ -371,6 +382,12 @@
           file:
             path: /etc/nginx/conf.d/default.conf
             state: absent
+
+        - name: Start nginx for ACME challenge
+          service:
+            name: nginx
+            state: started
+            enabled: yes
 
         - name: Obtain Let's Encrypt certificate (if domain is set)
           when: domain is defined and domain | length > 0
@@ -455,17 +472,6 @@
           loop:
             - "{{ vnc_service_name }}"
             - novnc
-
-    - name: Configure firewall (firewalld)
-      firewalld:
-        service: "{{ item.service }}"
-        state: enabled
-        permanent: yes
-        immediate: yes
-      loop:
-        - { service: ssh }
-        - { service: https }
-        - { service: http }
 
     - name: Configure fail2ban for noVNC protection via nginx logs
       block:
