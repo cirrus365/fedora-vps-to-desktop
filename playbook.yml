@@ -14,14 +14,10 @@
           - ansible_facts['distribution'] == "Fedora" and ansible_facts['distribution_version'] is version('43', '>=')
         fail_msg: "Unsupported OS. Only Fedora 43+ is supported."
 
-    - name: Ensure pip is available
-      dnf:
-        name: python3-pip
-        state: present
-
     - name: Install passlib for password hashing
-      pip:
-        name: passlib
+      dnf:
+        name: python3-passlib
+        state: present
 
     - name: Check if {{ username }} user exists
       command: id -u {{ username }}
