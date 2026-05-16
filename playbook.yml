@@ -502,6 +502,18 @@
             dest: /etc/fail2ban/jail.d/novnc.conf
             mode: 0644
 
+        - name: Configure fail2ban jail for SSH
+          copy:
+            content: |
+              [sshd]
+              enabled = true
+              backend = systemd
+              maxretry = 5
+              bantime = 3600
+              findtime = 600
+            dest: /etc/fail2ban/jail.d/sshd.conf
+            mode: 0644
+
         - name: Create fail2ban systemd override directory
           file:
             path: /etc/systemd/system/fail2ban.service.d
