@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO_URL="https://github.com/markeast/fedora-vps-to-desktop"
+REPO_URL="https://github.com/cirrus365/fedora-vps-to-desktop"
 INSTALL_DIR="/opt/vdp"
 
 # Silent mode: VDP_USERNAME, VDP_USER_PASSWORD, VDP_VNC_PASSWORD, VDP_DOMAIN, VDP_TIMEZONE
