@@ -463,7 +463,7 @@
 
             - name: Enable certbot auto-renewal timer
               systemd:
-                name: certbot.timer
+                name: certbot-renew.timer
                 state: started
                 enabled: yes
 
