@@ -151,13 +151,13 @@
         - /etc/ssl/novnc/novnc.crt
         - /etc/ssl/novnc/novnc.key
 
-    - name: Create TigerVNC config directory for {{ username }} (TigerVNC 1.15+)
+    - name: Create VNC directory for {{ username }}
       file:
-        path: /home/{{ username }}/.config/tigervnc
+        path: /home/{{ username }}/.vnc
         state: directory
         owner: "{{ username }}"
         group: "{{ username }}"
-        mode: 0700
+        mode: 0755
 
     - name: Create XDG runtime directory for {{ username }}
       file:
@@ -169,15 +169,15 @@
 
     - name: Set VNC password for {{ username }}
       shell: |
-        printf "%s" "{{ vnc_password }}" | vncpasswd -f > /home/{{ username }}/.config/tigervnc/passwd
+        printf "%s" "{{ vnc_password }}" | vncpasswd -f > /home/{{ username }}/.vnc/passwd
       args:
-        creates: /home/{{ username }}/.config/tigervnc/passwd
+        creates: /home/{{ username }}/.vnc/passwd
       become: yes
       become_user: "{{ username }}"
 
     - name: Set VNC password file permissions
       file:
-        path: /home/{{ username }}/.config/tigervnc/passwd
+        path: /home/{{ username }}/.vnc/passwd
         owner: "{{ username }}"
         group: "{{ username }}"
         mode: 0600
@@ -201,15 +201,10 @@
           [ -r ~/.Xresources ] && xrdb ~/.Xresources
 
           exec startxfce4
-        dest: /home/{{ username }}/.config/tigervnc/xstartup
+        dest: /home/{{ username }}/.vnc/xstartup
         owner: "{{ username }}"
         group: "{{ username }}"
         mode: 0755
-
-    - name: Remove old .vnc directory (prevents TigerVNC 1.15 migration error)
-      file:
-        path: /home/{{ username }}/.vnc
-        state: absent
 
     - name: Create VNC systemd service
       copy:
