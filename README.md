@@ -32,7 +32,7 @@ Transform a fresh Fedora 43+ machine into a full remote desktop with web-based V
 Run as root on your Fedora machine:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/markeast/fedora-vps-to-desktop/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/cirrus365/fedora-vps-to-desktop/main/install.sh | bash
 ```
 
 The script will:
