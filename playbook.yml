@@ -328,6 +328,13 @@
             state: directory
             mode: 0755
 
+        - name: Fix SELinux context on webroot and noVNC
+          command: restorecon -R {{ item }}
+          changed_when: false
+          loop:
+            - /var/www/html
+            - /opt/noVNC
+
         - name: Set SSL certificate facts
           set_fact:
             ssl_cert_path: /etc/ssl/novnc/novnc.crt
@@ -383,22 +390,22 @@
             path: /etc/nginx/conf.d/default.conf
             state: absent
 
-        - name: Start nginx for ACME challenge
-          service:
-            name: nginx
-            state: started
-            enabled: yes
-
         - name: Obtain Let's Encrypt certificate (if domain is set)
           when: domain is defined and domain | length > 0
           block:
+            - name: Stop nginx for certbot standalone mode
+              service:
+                name: nginx
+                state: stopped
+              ignore_errors: yes
+
             - name: Run certbot to get certificate
               shell: |
                 {% if letsencrypt_email is defined and letsencrypt_email | length > 0 %}
-                certbot certonly --webroot -w /var/www/html -d {{ domain }} \
+                certbot certonly --standalone -d {{ domain }} \
                   --non-interactive --agree-tos -m {{ letsencrypt_email }}
                 {% else %}
-                certbot certonly --webroot -w /var/www/html -d {{ domain }} \
+                certbot certonly --standalone -d {{ domain }} \
                   --non-interactive --agree-tos --register-unsafely-without-email
                 {% endif %}
               args:
